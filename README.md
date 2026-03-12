@@ -1,5 +1,11 @@
 # Real-Time Oriented Object Detection Transformer in Remote Sensing Images (TGRS 2026)
 
+
+![visitors](https://visitor-badge.laobi.icu/badge?page_id=wokaikaixinxin/O2-RT-DETR)
+[![GitHub Repo stars](https://img.shields.io/github/stars/wokaikaixinxin/O2-RT-DETR?style=social)](https://github.com/wokaikaixinxin/O2-RT-DETR/stargazers)
+
+
+
 [IEEE TGRS Link](https://ieeexplore.ieee.org/document/11424629)
 
 
