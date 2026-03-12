@@ -16,6 +16,14 @@ Recent real-time detection transformers have gained popularity due to their simp
 
 Code is available at https://github.com/wokaikaixinxin/ai4rs
 
+
+**NOTE: O2-RTDETR is earlier than YOLO 26 !!!** We publicly released some of our methods on ModelScope as early as October 2025. The hash values are shown in the image below.
+
+<div align="center">
+  <img src="./release_on_modelscope.jpg" />
+</div>
+
+
 # Bibtex
 
 ```bibtex
