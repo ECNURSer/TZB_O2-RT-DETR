@@ -8,9 +8,6 @@
 
 [IEEE TGRS Link](https://ieeexplore.ieee.org/document/11424629)
 
-<div align="center">
-  <img src="./latency.jpg"  width="500"/>
-</div>
 
 ## Abstract
 
@@ -18,6 +15,11 @@ Recent real-time detection transformers have gained popularity due to their simp
 
 Code is available at https://github.com/wokaikaixinxin/ai4rs
 
+<div align="center">
+  <img src="./latency.jpg"  width="500"/>
+</div>
+
+---
 
 **NOTE: O2-RTDETR is earlier than YOLO 26 !!!** We publicly released some of our methods on ModelScope as early as October 2025. The hash values are shown in the image below.
 
