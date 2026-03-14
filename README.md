@@ -10,7 +10,7 @@
 
 [Paper PDF](./Real_Time_Oriented_Object_Detection_Transformer_in_Remote_Sensing_Images.pdf)
 
-[![Bilibili](https://img.shields.io/badge/Training Tutorial-fb7299?style=flat-square&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1QQw4zJEot/)
+[![Bilibili](https://img.shields.io/badge/Training_Tutorial-fb7299?style=flat-square&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1QQw4zJEot/)
 
 ## Abstract
 
