@@ -19,7 +19,7 @@ Deploy Tutorial: [![Bilibili](https://img.shields.io/badge/Deploy_Tutorial-fb729
 
 Recent real-time detection transformers have gained popularity due to their simplicity and efficiency. However, these detectors do not explicitly model object rotation, especially in remote sensing imagery where objects appear at arbitrary angles, leading to challenges in angle representation, matching cost, and training stability. In this paper, **we propose a real-time oriented object detection transformer, the first real-time end-to-end oriented object detector to the best of our knowledge**, that addresses the above issues. Specifically, angle distribution refinement is proposed to reformulate angle regression as an iterative refinement of probability distributions, thereby capturing the uncertainty of object rotation and providing a more fine-grained angle representation. Then, we incorporate a Chamfer distance cost into bipartite matching, measuring box distance via vertex sets, enabling more accurate geometric alignment and eliminating ambiguous matches. Moreover, we propose oriented contrastive denoising to stabilize training and analyze four noise modes. We observe that a ground truth can be assigned to different index queries across different decoder layers, and analyze this issue using the proposed instability metric. We design a series of model variants and experiments to validate the proposed method.
 
-Code is available at https://github.com/wokaikaixinxin/ai4rs
+Code is available at https://github.com/wokaikaixinxin/ai4rs/blob/main/projects/rotated_rtdetr/README.md
 
 <div align="center">
   <img src="./latency.jpg"  width="500"/>
