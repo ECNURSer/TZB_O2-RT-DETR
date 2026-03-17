@@ -8,8 +8,6 @@
 
 [IEEE TGRS Xplore](https://ieeexplore.ieee.org/document/11424629)
 
-[Paper PDF](./Real_Time_Oriented_Object_Detection_Transformer_in_Remote_Sensing_Images.pdf)
-
 [Arxiv](https://arxiv.org/abs/2603.15497)
 
 Bilibili Install Tutorial:[![Bilibili](https://img.shields.io/badge/Installation_Tutorial-fb7299?style=flat-square&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1Ufw4zyEhR/)
