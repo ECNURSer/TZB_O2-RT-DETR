@@ -42,9 +42,9 @@ Code is available at https://github.com/wokaikaixinxin/ai4rs/blob/main/projects/
   journal={IEEE Transactions on Geoscience and Remote Sensing}, 
   title={Real-Time Oriented Object Detection Transformer in Remote Sensing Images}, 
   year={2026},
-  volume={},
-  number={},
-  pages={1-1},
-  keywords={Real-time systems;Transformers;Detectors;Remote sensing;Costs;Training;Accuracy;YOLO;Uncertainty;Noise reduction;Oriented object detection;detection transformer;real-time detector;remote sensing},
+  volume={64},
+  number={5613014},
+  pages={1-14},
+  keywords={Real-time systems;Transformers;Detectors;Remote sensing;Costs;Training;Accuracy;YOLO;Uncertainty;Noise reduction;Detection transformer (DETR);oriented object detection;real-time detector;remote sensing},
   doi={10.1109/TGRS.2026.3671683}}
 ```
