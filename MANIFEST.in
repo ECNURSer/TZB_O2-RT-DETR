@@ -1,4 +1,0 @@
-include requirements/*.txt
-include ai4rs/.mim/model-index.yml
-recursive-include ai4rs/.mim/configs *.py *.yml
-recursive-include ai4rs/.mim/tools *.py *.sh

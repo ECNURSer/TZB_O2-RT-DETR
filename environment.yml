@@ -1,0 +1,17 @@
+name: o2-rtdetr-obb
+channels:
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - torch==2.11.0
+      - torchvision==0.26.0
+      - torchaudio==2.11.0
+      - numpy==1.26.4
+      - opencv-python==4.11.0.86
+      - opencv-python-headless==4.11.0.86
+      - mmengine==0.10.7
+      - mmcv==2.1.0
+      - mmdet==3.3.0

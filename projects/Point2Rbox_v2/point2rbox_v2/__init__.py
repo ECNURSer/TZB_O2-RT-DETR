@@ -1,6 +1,0 @@
-from .point2rbox_v2 import Point2RBoxV2
-from .point2rbox_v2_head import Point2RBoxV2Head
-
-__all__ = [
-    'Point2RBoxV2', 'Point2RBoxV2Head'
-]

@@ -125,3 +125,18 @@ tmp
 
 # custom
 mmrotate/.mim
+
+# Project training artifacts
+logs/
+runs/
+work_dirs/
+weights/
+checkpoints/
+*.log
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.engine
+*.safetensors
+events.out.tfevents*
