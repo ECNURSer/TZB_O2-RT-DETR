@@ -1,104 +1,316 @@
 #!/usr/bin/env python3
-"""Evaluate O2-RT-DETR with project F1@polygon-IoU0.3 and DOTA mAP diagnostics."""
+"""Generate O2-RT-DETR OBB prediction caches and score competition F1."""
 
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
+import time
 from pathlib import Path
 
+import cv2
+import torch
+from mmdet.apis import inference_detector, init_detector
 from mmdet.utils import register_all_modules as register_all_modules_mmdet
 from mmengine.config import Config
-from mmengine.registry import RUNNERS
-from mmengine.runner import Runner
 
+from ai4rs.structures.bbox import rbox2qbox
 from ai4rs.utils import register_all_modules
-from experiment_results import append_result, metric_values
-from project_utils import (
-    CONFIGS,
-    PROJECT_ROOT,
-    require_dataset,
-    set_data_root,
-    set_imgsz,
-    set_loader_options,
-    set_max_det,
-    setup_pythonpath,
+from competition_scoring import (
+    ObjectAnnotation,
+    best_class_confidences,
+    best_confidence,
+    class_scores,
+    load_dota_ground_truth,
+    merge_matches,
+    score_records,
+    score_to_dict,
 )
+from experiment_results import append_result
+from project_utils import CONFIGS, PROJECT_ROOT, fold_data_root, require_dataset, set_data_root, set_imgsz, set_max_det, setup_pythonpath
+
+
+def allow_full_checkpoint_loading() -> None:
+    original_load = torch.load
+
+    def load_with_full_checkpoint(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return original_load(*args, **kwargs)
+
+    torch.load = load_with_full_checkpoint
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Evaluate O2-RT-DETR competition F1@0.3")
+    parser = argparse.ArgumentParser(description="本地 O2-RT-DETR OBB F1@IoU0.3 评估与置信度搜索")
     parser.add_argument("--weights", type=Path, required=True)
     parser.add_argument("--model", choices=sorted(CONFIGS), default="r50")
     parser.add_argument("--fold", type=int, choices=range(5), default=0)
-    parser.add_argument("--split", choices=("val", "test"), default="val")
+    parser.add_argument("--split", choices=("train", "val", "test"), default="val")
     parser.add_argument("--imgsz", type=int, default=1280)
-    parser.add_argument("--batch", type=int, default=4)
-    parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--device", default="0")
+    parser.add_argument("--batch", type=int, default=8)
+    parser.add_argument("--device", default="0", help="Single inference GPU")
+    parser.add_argument("--min-conf", type=float, default=0.05)
+    parser.add_argument("--nms-iou", type=float, default=0.7, help="Recorded for parity; RT-DETR does not use NMS here")
     parser.add_argument("--max-det", type=int, default=600)
+    parser.add_argument("--score-max-det", type=int)
+    parser.add_argument("--chunk-size", type=int, help="Images processed per inference call; defaults to --batch")
+    parser.add_argument("--match-iou", type=float, default=0.3)
     parser.add_argument("--fixed-conf", type=float)
-    parser.add_argument("--name")
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--reuse-cache", action="store_true")
+    parser.add_argument("--limit", type=int)
     parser.add_argument("--results-csv", type=Path, default=PROJECT_ROOT / "results" / "experiments.csv")
     return parser
 
 
-def set_fixed_conf(cfg: Config, fixed_conf: float | None) -> None:
+def resolve_split(fold: int, split: str) -> tuple[list[Path], Path]:
+    data_root = require_dataset(fold, (split,))
+    image_dir = data_root / split / "images"
+    label_dir = data_root / split / "annfiles"
+    image_paths = sorted(path for path in image_dir.iterdir() if path.is_file() or path.is_symlink())
+    stems = [path.stem for path in image_paths]
+    if len(stems) != len(set(stems)):
+        raise ValueError(f"Image stems must be unique for cached scoring: {image_dir}")
+    return image_paths, label_dir
+
+
+def build_model(args: argparse.Namespace):
+    register_all_modules_mmdet(init_default_scope=False)
+    register_all_modules(init_default_scope=False)
+    cfg = Config.fromfile(CONFIGS[args.model])
+    set_data_root(cfg, fold_data_root(args.fold))
+    set_imgsz(cfg, args.imgsz)
+    set_max_det(cfg, args.max_det)
+    cfg.load_from = None
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    model = init_detector(cfg, str(args.weights), device=device)
+    class_names = tuple(cfg.get("class_names", cfg.get("metainfo", {}).get("classes", ())))
+    if class_names:
+        model.dataset_meta = {**getattr(model, "dataset_meta", {}), "classes": class_names}
+    return model
+
+
+def image_shape(path: Path) -> tuple[int, int]:
+    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise FileNotFoundError(f"Image cannot be read: {path}")
+    return int(image.shape[0]), int(image.shape[1])
+
+
+def result_shape(result, fallback_path: Path) -> tuple[int, int]:
+    metainfo = getattr(result, "metainfo", {}) or {}
+    shape = metainfo.get("ori_shape") or metainfo.get("img_shape")
+    if shape:
+        return int(shape[0]), int(shape[1])
+    return image_shape(fallback_path)
+
+
+def result_predictions(result, min_conf: float, max_det: int) -> list[dict]:
+    pred_instances = result.pred_instances
+    bboxes = pred_instances.bboxes
+    if hasattr(bboxes, "tensor"):
+        bboxes = bboxes.tensor
+    bboxes = bboxes.detach().cpu().float()
+    scores = pred_instances.scores.detach().cpu().float()
+    labels = pred_instances.labels.detach().cpu().long()
+    if bboxes.numel() == 0:
+        return []
+    if bboxes.shape[-1] == 5:
+        qboxes = rbox2qbox(bboxes).reshape(-1, 4, 2)
+    elif bboxes.shape[-1] == 8:
+        qboxes = bboxes.reshape(-1, 4, 2)
+    else:
+        raise ValueError(f"Expected rbox or qbox predictions, got shape {tuple(bboxes.shape)}")
+    keep = torch.nonzero(scores >= min_conf, as_tuple=False).flatten()
+    if keep.numel() == 0:
+        return []
+    order = torch.argsort(scores[keep], descending=True)
+    keep = keep[order][:max_det]
+    return [
+        {
+            "class_id": int(labels[index]),
+            "confidence": float(scores[index]),
+            "polygon": [[float(x), float(y)] for x, y in qboxes[index]],
+        }
+        for index in keep.tolist()
+    ]
+
+
+def generate_cache(args: argparse.Namespace, image_paths: list[Path], cache_path: Path) -> dict:
+    model = build_model(args)
+    chunk_size = args.chunk_size or args.batch
+    started = time.perf_counter()
+    images = []
+    inference_seconds = 0.0
+    for start in range(0, len(image_paths), chunk_size):
+        chunk = image_paths[start : start + chunk_size]
+        infer_started = time.perf_counter()
+        results = inference_detector(model, [str(path) for path in chunk])
+        inference_seconds += time.perf_counter() - infer_started
+        if not isinstance(results, (list, tuple)):
+            results = [results]
+        for source_path, result in zip(chunk, results, strict=True):
+            height, width = result_shape(result, source_path)
+            images.append(
+                {
+                    "image_id": source_path.stem,
+                    "width": width,
+                    "height": height,
+                    "predictions": result_predictions(result, args.min_conf, args.max_det),
+                }
+            )
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print(f"device {args.device}: cached {min(start + len(chunk), len(image_paths))}/{len(image_paths)} images")
+    wall_seconds = time.perf_counter() - started
+    class_names = getattr(model, "dataset_meta", {}).get("classes", ())
+    payload = {
+        "schema_version": 1,
+        "matching": "same-class confidence-greedy one-to-one polygon IoU",
+        "model": args.model,
+        "weights": str(args.weights),
+        "imgsz": args.imgsz,
+        "min_conf": args.min_conf,
+        "nms_iou": args.nms_iou,
+        "nms_note": "O2-RT-DETR inference is DETR-style; nms_iou is recorded for YOLO26 parity only.",
+        "max_det": args.max_det,
+        "device": str(args.device),
+        "image_count": len(images),
+        "wall_seconds": wall_seconds,
+        "speed_ms_per_image": {
+            "inference": 1000.0 * inference_seconds / len(images) if images else 0.0,
+            "wall": 1000.0 * wall_seconds / len(images) if images else 0.0,
+        },
+        "class_names": {str(index): name for index, name in enumerate(class_names)},
+        "images": images,
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return payload
+
+
+def score_cache(
+    payload: dict,
+    label_dir: Path,
+    iou_threshold: float,
+    score_max_det: int | None = None,
+    fixed_conf: float | None = None,
+) -> dict:
+    names = {int(key): value for key, value in payload.get("class_names", {}).items()}
+    class_to_id = {name: class_id for class_id, name in names.items()}
+    images = []
+    for image in payload["images"]:
+        cached_predictions = image["predictions"][:score_max_det] if score_max_det else image["predictions"]
+        predictions = [
+            ObjectAnnotation(
+                class_id=int(item["class_id"]),
+                confidence=float(item["confidence"]),
+                polygon=tuple((float(x), float(y)) for x, y in item["polygon"]),
+            )
+            for item in cached_predictions
+        ]
+        targets = load_dota_ground_truth(label_dir / f"{image['image_id']}.txt", class_to_id)
+        images.append((predictions, targets))
+    records, total_gt_by_class = merge_matches(images, iou_threshold=iou_threshold)
+    total_gt = sum(total_gt_by_class.values())
     if fixed_conf is None:
-        return
-    evaluators = cfg.test_evaluator if isinstance(cfg.test_evaluator, list) else [cfg.test_evaluator]
-    for evaluator in evaluators:
-        if evaluator.get("type") == "CompetitionF1Metric":
-            evaluator["fixed_conf"] = fixed_conf
+        selected = best_confidence(records, total_gt)
+        class_thresholds, best_by_class = best_class_confidences(records, total_gt_by_class)
+        optimization = {
+            "threshold_mode": "optimized_on_evaluated_split",
+            "best": score_to_dict(selected),
+            "best_per_class": {
+                "score": score_to_dict(best_by_class),
+                "thresholds": {names.get(class_id, str(class_id)): confidence for class_id, confidence in class_thresholds.items()},
+            },
+        }
+    else:
+        selected = score_records(records, total_gt, fixed_conf)
+        optimization = {
+            "threshold_mode": "fixed",
+            "fixed_conf": fixed_conf,
+            "score": score_to_dict(selected),
+        }
+    per_class = class_scores(records, total_gt_by_class, selected.confidence)
+    return {
+        "metric": f"class-aware F1@polygon-IoU{iou_threshold:g}",
+        "matching": "predictions sorted by confidence; same class; one GT matched at most once",
+        **optimization,
+        "per_class": {names.get(class_id, str(class_id)): score_to_dict(score) for class_id, score in per_class.items()},
+        "total_ground_truths": total_gt,
+        "prediction_cache": {
+            key: payload[key]
+            for key in ("model", "weights", "imgsz", "min_conf", "nms_iou", "max_det", "image_count", "wall_seconds")
+        },
+        "score_max_det": score_max_det or payload["max_det"],
+        "speed_ms_per_image": payload.get("speed_ms_per_image", {}),
+    }
 
 
 def main() -> None:
     setup_pythonpath()
+    allow_full_checkpoint_loading()
     args = build_parser().parse_args()
-    if "," in args.device:
-        raise ValueError("Evaluation uses one GPU. Pass a single --device, such as 0 or 7.")
-    os.environ.setdefault("CUDA_VISIBLE_DEVICES", args.device)
-    weights = args.weights.expanduser().resolve()
-    if not weights.is_file():
-        raise FileNotFoundError(f"Weights not found: {weights}")
-    data_root = require_dataset(args.fold, (args.split,))
-
-    register_all_modules_mmdet(init_default_scope=False)
-    register_all_modules(init_default_scope=False)
-
-    cfg = Config.fromfile(CONFIGS[args.model])
-    set_data_root(cfg, data_root)
-    set_loader_options(cfg, batch=args.batch, workers=args.workers)
-    set_imgsz(cfg, args.imgsz)
-    set_max_det(cfg, args.max_det)
-    if args.split == "val":
-        cfg.test_dataloader = cfg.val_dataloader
-    set_fixed_conf(cfg, args.fixed_conf)
-    run_name = args.name or f"{args.split}_o2_rtdetr_{args.model}vd_fold{args.fold}"
-    cfg.work_dir = str(PROJECT_ROOT / "runs" / "test" / run_name)
-    cfg.load_from = str(weights)
-
-    runner = Runner.from_cfg(cfg) if "runner_type" not in cfg else RUNNERS.build(cfg)
-    metrics = runner.test()
-    output = args.output.expanduser().resolve() if args.output else Path(cfg.work_dir) / f"{args.split}_metrics.json"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(metrics, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if "," in str(args.device):
+        raise ValueError("Competition inference uses one GPU; pass a single --device such as 7")
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(args.device))
+    if args.score_max_det is not None and args.score_max_det <= 0:
+        raise ValueError("--score-max-det must be positive")
+    if args.fixed_conf is not None and not 0.0 <= args.fixed_conf <= 1.0:
+        raise ValueError("--fixed-conf must be between 0 and 1")
+    args.weights = args.weights.expanduser().resolve()
+    args.cache = args.cache.expanduser().resolve()
+    args.output = args.output.expanduser().resolve()
+    if not args.weights.is_file():
+        raise FileNotFoundError(f"Weights not found: {args.weights}")
+    image_paths, label_dir = resolve_split(args.fold, args.split)
+    if args.limit is not None:
+        if args.limit <= 0:
+            raise ValueError("--limit must be positive")
+        image_paths = image_paths[: args.limit]
+    if args.reuse_cache:
+        payload = json.loads(args.cache.read_text(encoding="utf-8"))
+    else:
+        payload = generate_cache(args, image_paths, args.cache)
+    if payload.get("image_count") != len(image_paths):
+        raise ValueError("Prediction cache image count does not match the selected data split")
+    expected_ids = [path.stem for path in image_paths]
+    cached_ids = [image["image_id"] for image in payload.get("images", [])]
+    if cached_ids != expected_ids:
+        raise ValueError("Prediction cache image IDs do not match the selected data split")
+    cached_weights = Path(payload.get("weights", "")).expanduser().resolve()
+    if cached_weights != args.weights:
+        raise ValueError(f"Prediction cache weights do not match --weights: {cached_weights}")
+    if args.score_max_det is not None and args.score_max_det > int(payload["max_det"]):
+        raise ValueError("--score-max-det cannot exceed the max_det used to generate the prediction cache")
+    metrics = score_cache(payload, label_dir, args.match_iou, args.score_max_det, args.fixed_conf)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(metrics, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    score = metrics.get("score") or metrics.get("best", {})
     append_result(
         args.results_csv.expanduser().resolve(),
         {
             "stage": "competition",
-            "run_name": run_name,
+            "run_name": args.output.stem,
             "model": args.model,
             "fold": args.fold,
             "split": args.split,
             "imgsz": args.imgsz,
             "batch": args.batch,
-            "weights": str(weights),
-            "params_m": sum(parameter.numel() for parameter in runner.model.parameters()) / 1_000_000,
-            "results_dir": str(Path(cfg.work_dir)),
-            **metric_values(metrics),
+            "weights": str(args.weights),
+            "precision": score.get("precision", ""),
+            "recall": score.get("recall", ""),
+            "f1": score.get("f1", ""),
+            "competition_precision": score.get("precision", ""),
+            "competition_recall": score.get("recall", ""),
+            "competition_f1_03": score.get("f1", ""),
+            "competition_conf": score.get("confidence", ""),
+            "inference_ms": metrics.get("speed_ms_per_image", {}).get("inference", ""),
+            "results_dir": str(args.output.parent),
         },
     )
     print(json.dumps(metrics, indent=2, ensure_ascii=False))

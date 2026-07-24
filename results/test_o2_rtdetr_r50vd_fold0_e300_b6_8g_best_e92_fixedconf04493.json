@@ -1,0 +1,12 @@
+{
+  "dota/mAP": 0.5236181765794754,
+  "dota/AP50": 0.642,
+  "dota/AP75": 0.405,
+  "competition/precision": 0.8267577459993191,
+  "competition/recall": 0.8170729142568719,
+  "competition/F1@0.3": 0.8218868004357898,
+  "competition/best_conf@0.3": 0.4492565989494324,
+  "competition/tp": 38851,
+  "competition/fp": 8141,
+  "competition/fn": 8698
+}

@@ -80,6 +80,9 @@ case "$MODE" in
     competition)
         run_eval evaluate_competition.py "$@"
         ;;
+    predict)
+        run_eval predict.py "$@"
+        ;;
     tensorboard)
         LOGDIR=""
         PORT="6006"
@@ -123,8 +126,10 @@ case "$MODE" in
   bash run.sh convert --fold 0
   bash run.sh train-r50 --fold 0 --device 0,1 --batch 4 --name o2_rtdetr_r50vd_fold0
   bash run.sh train-r34 --fold 0 --device 0,1 --batch 4 --name o2_rtdetr_r34vd_fold0
-  bash run.sh competition --model r50 --fold 0 --split val --weights runs/o2_rtdetr_r50vd_fold0/best_competition_F1@0.3_epoch_*.pth --device 0
-  bash run.sh competition --model r50 --fold 0 --split test --fixed-conf <val_conf> --weights <best.pth> --device 0
+  bash run.sh test --model r50 --fold 0 --split test --fixed-conf <val_conf> --weights <best.pth> --output results/test_metrics.json --device 0
+  bash run.sh competition --model r50 --fold 0 --split val --weights <best.pth> --cache runs/competition/val_cache.json --output runs/competition/val_metrics.json --device 0
+  bash run.sh competition --model r50 --fold 0 --split test --fixed-conf <val_conf> --weights <best.pth> --cache runs/competition/test_cache.json --output runs/competition/test_metrics.json --device 0
+  bash run.sh predict --model r50 --fold 0 --weights <best.pth> --source <image-or-dir> --device 0 --name predict
   bash run.sh tensorboard --logdir runs/o2_rtdetr_r50vd_fold0 --port 6007
 EOF
         ;;
