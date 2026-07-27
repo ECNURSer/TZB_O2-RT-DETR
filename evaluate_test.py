@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weights", type=Path, required=True)
     parser.add_argument("--model", choices=sorted(CONFIGS), default="r50")
     parser.add_argument("--fold", type=int, choices=range(5), default=0)
+    parser.add_argument("--dataset", help="named DOTA dataset under data/tzb_dota; overrides --fold")
     parser.add_argument("--split", choices=("val", "test"), default="test")
     parser.add_argument("--imgsz", type=int, default=1280)
     parser.add_argument("--batch", type=int, default=4)
@@ -75,7 +76,7 @@ def main() -> None:
     weights = args.weights.expanduser().resolve()
     if not weights.is_file():
         raise FileNotFoundError(f"Weights not found: {weights}")
-    data_root = require_dataset(args.fold, (args.split,))
+    data_root = require_dataset(args.fold, (args.split,), dataset=args.dataset)
 
     register_all_modules_mmdet(init_default_scope=False)
     register_all_modules(init_default_scope=False)
@@ -88,7 +89,8 @@ def main() -> None:
     if args.split == "val":
         cfg.test_dataloader = cfg.val_dataloader
     set_fixed_conf(cfg, args.fixed_conf)
-    run_name = args.name or f"{args.split}_o2_rtdetr_{args.model}vd_fold{args.fold}"
+    data_label = args.dataset or f"fold{args.fold}"
+    run_name = args.name or f"{args.split}_o2_rtdetr_{args.model}vd_{data_label}"
     cfg.work_dir = str(PROJECT_ROOT / "runs" / "test" / run_name)
     cfg.load_from = str(weights)
 
@@ -103,7 +105,7 @@ def main() -> None:
             "stage": "test",
             "run_name": run_name,
             "model": args.model,
-            "fold": args.fold,
+            "fold": args.dataset or args.fold,
             "split": args.split,
             "imgsz": args.imgsz,
             "batch": args.batch,

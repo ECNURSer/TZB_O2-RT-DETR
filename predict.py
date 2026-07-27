@@ -12,13 +12,13 @@ from pathlib import Path
 
 import cv2
 import torch
-from mmdet.apis import inference_detector, init_detector
+from mmdet.apis import init_detector
 from mmdet.utils import register_all_modules as register_all_modules_mmdet
 from mmengine.config import Config
 
-from ai4rs.structures.bbox import rbox2qbox
 from ai4rs.utils import register_all_modules
-from project_utils import CONFIGS, PROJECT_ROOT, fold_data_root, set_data_root, set_imgsz, set_max_det, setup_pythonpath
+from inference_utils import infer_paths, infer_paths_tta, parse_tta_flips
+from project_utils import CONFIGS, PROJECT_ROOT, resolve_data_root, set_data_root, set_imgsz, set_max_det, setup_pythonpath
 
 
 IMAGE_SUFFIXES = {".bmp", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
@@ -52,11 +52,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source", required=True, help="Image file, directory, or glob pattern")
     parser.add_argument("--model", choices=sorted(CONFIGS), default="r50")
     parser.add_argument("--fold", type=int, choices=range(5), default=0)
+    parser.add_argument("--dataset", help="named DOTA dataset under data/tzb_dota; overrides --fold")
     parser.add_argument("--imgsz", type=int, default=1280)
     parser.add_argument("--conf", type=float, default=0.4492565989494324)
     parser.add_argument("--max-det", type=int, default=600)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--device", default="0")
+    parser.add_argument("--tta", action="store_true", help="Enable flip TTA on inference")
+    parser.add_argument("--tta-flips", default="h,v,hv", help="Comma-separated flips for TTA: h,v,hv")
+    parser.add_argument("--nms-iou", type=float, default=0.7, help="Polygon NMS IoU for TTA fusion")
     parser.add_argument("--project", type=Path, default=PROJECT_ROOT / "runs" / "predict")
     parser.add_argument("--name", default="predict")
     parser.add_argument("--nosave", action="store_true", help="Do not save visualization images")
@@ -87,7 +91,7 @@ def build_model(args: argparse.Namespace):
     register_all_modules_mmdet(init_default_scope=False)
     register_all_modules(init_default_scope=False)
     cfg = Config.fromfile(CONFIGS[args.model])
-    set_data_root(cfg, fold_data_root(args.fold))
+    set_data_root(cfg, resolve_data_root(args.fold, args.dataset))
     set_imgsz(cfg, args.imgsz)
     set_max_det(cfg, args.max_det)
     cfg.load_from = None
@@ -97,47 +101,6 @@ def build_model(args: argparse.Namespace):
     if class_names:
         model.dataset_meta = {**getattr(model, "dataset_meta", {}), "classes": class_names}
     return model
-
-
-def result_shape(result, image: Path) -> tuple[int, int]:
-    metainfo = getattr(result, "metainfo", {}) or {}
-    shape = metainfo.get("ori_shape") or metainfo.get("img_shape")
-    if shape:
-        return int(shape[0]), int(shape[1])
-    loaded = cv2.imread(str(image), cv2.IMREAD_UNCHANGED)
-    if loaded is None:
-        raise FileNotFoundError(f"Image cannot be read: {image}")
-    return int(loaded.shape[0]), int(loaded.shape[1])
-
-
-def result_predictions(result, conf: float, max_det: int) -> list[dict]:
-    pred_instances = result.pred_instances
-    bboxes = pred_instances.bboxes
-    if hasattr(bboxes, "tensor"):
-        bboxes = bboxes.tensor
-    bboxes = bboxes.detach().cpu().float()
-    scores = pred_instances.scores.detach().cpu().float()
-    labels = pred_instances.labels.detach().cpu().long()
-    if bboxes.numel() == 0:
-        return []
-    if bboxes.shape[-1] == 5:
-        polygons = rbox2qbox(bboxes).reshape(-1, 4, 2)
-    elif bboxes.shape[-1] == 8:
-        polygons = bboxes.reshape(-1, 4, 2)
-    else:
-        raise ValueError(f"Expected rbox or qbox predictions, got shape {tuple(bboxes.shape)}")
-    keep = torch.nonzero(scores >= conf, as_tuple=False).flatten()
-    if keep.numel() == 0:
-        return []
-    keep = keep[torch.argsort(scores[keep], descending=True)][:max_det]
-    return [
-        {
-            "class_id": int(labels[index]),
-            "confidence": float(scores[index]),
-            "polygon": [[float(x), float(y)] for x, y in polygons[index]],
-        }
-        for index in keep.tolist()
-    ]
 
 
 def normalized_polygon(polygon: list[list[float]], width: int, height: int) -> list[float]:
@@ -212,24 +175,32 @@ def main() -> None:
         raise FileNotFoundError(f"权重不存在: {args.weights}")
     if args.batch <= 0:
         raise ValueError("--batch must be positive")
+    if not 0.0 <= args.nms_iou <= 1.0:
+        raise ValueError("--nms-iou must be between 0 and 1")
     if not 0.0 <= args.conf <= 1.0:
         raise ValueError("--conf must be between 0 and 1")
 
     image_paths = resolve_source(args.source)
+    tta_flips = parse_tta_flips(args.tta_flips)
+    if args.tta and not tta_flips:
+        raise ValueError("--tta requires at least one flip in --tta-flips")
+    tta_multiplier = 1 + len(tta_flips) if args.tta else 1
+    chunk_size = max(1, args.batch // tta_multiplier) if args.tta else args.batch
     run_dir = args.project / args.name
     label_dir = run_dir / "labels"
     name_map = unique_stems(image_paths)
     model = build_model(args)
     class_names = tuple(getattr(model, "dataset_meta", {}).get("classes", ()))
     records = []
-    for start in range(0, len(image_paths), args.batch):
-        chunk = image_paths[start : start + args.batch]
-        results = inference_detector(model, [str(path) for path in chunk])
-        if not isinstance(results, (list, tuple)):
-            results = [results]
-        for image_path, result in zip(chunk, results, strict=True):
-            height, width = result_shape(result, image_path)
-            predictions = result_predictions(result, args.conf, args.max_det)
+    for start in range(0, len(image_paths), chunk_size):
+        chunk = image_paths[start : start + chunk_size]
+        if args.tta:
+            chunk_records, _ = infer_paths_tta(model, chunk, args.conf, args.max_det, tta_flips, args.nms_iou)
+        else:
+            chunk_records, _ = infer_paths(model, chunk, args.conf, args.max_det)
+        for image_path, record in zip(chunk, chunk_records, strict=True):
+            height, width = int(record["height"]), int(record["width"])
+            predictions = record["predictions"]
             output_stem = name_map[image_path]
             if not args.no_txt:
                 write_label(label_dir / f"{output_stem}.txt", predictions, width, height, args.txt_format)
@@ -258,6 +229,9 @@ def main() -> None:
                 "imgsz": args.imgsz,
                 "conf": args.conf,
                 "max_det": args.max_det,
+                "tta": bool(args.tta),
+                "tta_flips": list(tta_flips) if args.tta else [],
+                "nms_iou": args.nms_iou,
                 "class_names": {str(index): name for index, name in enumerate(class_names)},
                 "images": records,
             },

@@ -28,8 +28,16 @@ def fold_data_root(fold: int) -> Path:
     return PROJECT_ROOT / "data" / "tzb_dota" / f"fold_{fold}"
 
 
-def require_dataset(fold: int, splits: tuple[str, ...] = ("train", "val")) -> Path:
-    data_root = fold_data_root(fold)
+def named_data_root(dataset: str) -> Path:
+    return PROJECT_ROOT / "data" / "tzb_dota" / dataset
+
+
+def resolve_data_root(fold: int | None = 0, dataset: str | None = None) -> Path:
+    return named_data_root(dataset) if dataset else fold_data_root(0 if fold is None else fold)
+
+
+def require_dataset(fold: int | None = 0, splits: tuple[str, ...] = ("train", "val"), dataset: str | None = None) -> Path:
+    data_root = resolve_data_root(fold, dataset)
     missing = []
     for split in splits:
         for child in ("images", "annfiles"):
@@ -37,9 +45,13 @@ def require_dataset(fold: int, splits: tuple[str, ...] = ("train", "val")) -> Pa
             if not path.is_dir():
                 missing.append(path)
     if missing:
+        if dataset:
+            command = f"python convert_to_dota.py --full-fair1m --full-name {dataset}"
+        else:
+            command = f"python convert_to_dota.py --fold {fold}"
         raise FileNotFoundError(
             "DOTA data is not prepared. Run: "
-            f"python convert_to_dota.py --fold {fold}. Missing: {missing[0]}"
+            f"{command}. Missing: {missing[0]}"
         )
     return data_root
 

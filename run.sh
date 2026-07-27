@@ -124,12 +124,16 @@ case "$MODE" in
         cat <<'EOF'
 用法:
   bash run.sh convert --fold 0
+  bash run.sh convert --full-fair1m --full-name full_fair1m
+  bash run.sh train-r50 --dataset full_fair1m --preset yolo26m-full --device 0,1,2,3,4,5,6,7 --name o2_rtdetr_r50vd_full_fair1m_yoloaug_mosaic40
   bash run.sh train-r50 --fold 0 --device 0,1 --batch 4 --name o2_rtdetr_r50vd_fold0
   bash run.sh train-r34 --fold 0 --device 0,1 --batch 4 --name o2_rtdetr_r34vd_fold0
-  bash run.sh test --model r50 --fold 0 --split test --fixed-conf <val_conf> --weights <best.pth> --output results/test_metrics.json --device 0
-  bash run.sh competition --model r50 --fold 0 --split val --weights <best.pth> --cache runs/competition/val_cache.json --output runs/competition/val_metrics.json --device 0
-  bash run.sh competition --model r50 --fold 0 --split test --fixed-conf <val_conf> --weights <best.pth> --cache runs/competition/test_cache.json --output runs/competition/test_metrics.json --device 0
-  bash run.sh predict --model r50 --fold 0 --weights <best.pth> --source <image-or-dir> --device 0 --name predict
+  bash run.sh test --model r50 --dataset full_fair1m --split test --fixed-conf <val_conf> --weights <best.pth> --output results/test_metrics.json --device 0
+  bash run.sh competition --model r50 --dataset full_fair1m --split val --weights <best.pth> --cache runs/competition/val_cache.json --output runs/competition/val_metrics.json --device 0
+  bash run.sh competition --model r50 --dataset full_fair1m --split test --fixed-conf <val_conf> --weights <best.pth> --cache runs/competition/test_cache.json --output runs/competition/test_metrics.json --device 0
+  bash run.sh competition --model r50 --dataset full_fair1m --split test --tta --fixed-conf <val_conf> --weights <best.pth> --cache runs/competition/test_tta_cache.json --output runs/competition/test_tta_metrics.json --device 0
+  bash run.sh predict --model r50 --dataset full_fair1m --weights <best.pth> --source <image-or-dir> --device 0 --name predict
+  bash run.sh predict --model r50 --dataset full_fair1m --tta --weights <best.pth> --source <image-or-dir> --device 0 --name predict_tta
   bash run.sh tensorboard --logdir runs/o2_rtdetr_r50vd_fold0 --port 6007
 EOF
         ;;
