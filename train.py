@@ -10,6 +10,7 @@ import os
 import sys
 from pathlib import Path
 
+import torch
 from mmdet.utils import register_all_modules as register_all_modules_mmdet
 from mmengine.config import Config, DictAction
 from mmengine.registry import RUNNERS
@@ -29,6 +30,35 @@ from project_utils import (
     set_max_det,
     setup_pythonpath,
 )
+
+
+DEFAULT_TB_SCALAR_KEYS = (
+    "base_lr",
+    "lr",
+    "loss",
+    "loss_cls",
+    "loss_bbox",
+    "loss_iou",
+    "grad_norm",
+    "memory",
+    "dota/mAP",
+    "dota/AP50",
+    "dota/AP75",
+    "competition/precision",
+    "competition/recall",
+    "competition/F1@0.3",
+    "competition/best_conf@0.3",
+)
+
+
+def allow_full_checkpoint_loading() -> None:
+    original_load = torch.load
+
+    def load_with_full_checkpoint(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return original_load(*args, **kwargs)
+
+    torch.load = load_with_full_checkpoint
 
 
 YOLO26M_FULL_PRESET = {
@@ -174,6 +204,45 @@ def apply_yolo26m_augmentation(cfg: Config, imgsz: int, mosaic_epochs: int) -> N
     )
 
 
+def fair1m_paper_pipeline(imgsz: int) -> list[dict]:
+    return [
+        dict(type="mmdet.LoadImageFromFile", backend_args=None),
+        dict(type="mmdet.LoadAnnotations", with_bbox=True, box_type="qbox"),
+        dict(type="ai4rs.ConvertBoxType", box_type_mapping=dict(gt_bboxes="rbox")),
+        dict(type="mmdet.Resize", scale=(imgsz, imgsz), keep_ratio=True),
+        dict(type="mmdet.RandomFlip", prob=0.75, direction=["horizontal", "vertical", "diagonal"]),
+        dict(type="mmdet.Pad", size=(imgsz, imgsz), pad_val=dict(img=(114, 114, 114))),
+        dict(type="mmdet.PackDetInputs"),
+    ]
+
+
+def apply_fair1m_paper_augmentation(cfg: Config, imgsz: int) -> None:
+    train_pipeline = fair1m_paper_pipeline(imgsz)
+    cfg.train_pipeline = train_pipeline
+    cfg.train_dataloader.dataset.pipeline = train_pipeline
+
+
+def parse_scalar_keys(value: str) -> tuple[str, ...] | None:
+    if value.lower() == "all":
+        return None
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def filter_visualizer_scalars(runner: Runner, scalar_keys: tuple[str, ...] | None) -> None:
+    if scalar_keys is None:
+        return
+    allowed = set(scalar_keys)
+    add_scalars = runner.visualizer.add_scalars
+
+    def add_filtered_scalars(scalars: dict, *args, **kwargs):
+        filtered = {key: value for key, value in scalars.items() if key in allowed}
+        if filtered:
+            return add_scalars(filtered, *args, **kwargs)
+        return None
+
+    runner.visualizer.add_scalars = add_filtered_scalars
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train O2-RT-DETR on the TZB OBB dataset")
     parser.add_argument("--model", choices=sorted(CONFIGS), default="r50")
@@ -186,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--device", help="handled by run.sh through CUDA_VISIBLE_DEVICES")
     parser.add_argument("--name")
-    parser.add_argument("--aug-profile", choices=("paper", "yolo26m"), default="paper")
+    parser.add_argument("--aug-profile", choices=("paper", "fair1m-paper", "yolo26m"), default="paper")
     parser.add_argument("--mosaic-epochs", type=int, default=0, help="YOLO-style mosaic epochs before switching it off")
     parser.add_argument("--save-period", type=int, default=1)
     parser.add_argument("--val-interval", type=int, default=1)
@@ -202,6 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--launcher", choices=["none", "pytorch", "slurm", "mpi"], default="none")
     parser.add_argument("--cfg-options", nargs="+", action=DictAction)
     parser.add_argument("--results-csv", type=Path, default=PROJECT_ROOT / "results" / "experiments.csv")
+    parser.add_argument("--tb-scalar-keys", default=",".join(DEFAULT_TB_SCALAR_KEYS), help='comma-separated TensorBoard scalar allowlist, or "all"')
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -209,6 +279,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     setup_pythonpath()
     args = build_parser().parse_args()
+    if args.resume:
+        allow_full_checkpoint_loading()
     apply_preset_defaults(args)
     if args.device and "," not in args.device:
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", args.device)
@@ -226,7 +298,9 @@ def main() -> None:
     set_imgsz(cfg, args.imgsz)
     set_max_det(cfg, args.max_det)
     set_optimizer_schedule(cfg, args)
-    if args.aug_profile == "yolo26m":
+    if args.aug_profile == "fair1m-paper":
+        apply_fair1m_paper_augmentation(cfg, args.imgsz)
+    elif args.aug_profile == "yolo26m":
         apply_yolo26m_augmentation(cfg, args.imgsz, args.mosaic_epochs)
 
     cfg.max_epochs = args.epochs
@@ -260,6 +334,7 @@ def main() -> None:
         return
 
     runner = Runner.from_cfg(cfg) if "runner_type" not in cfg else RUNNERS.build(cfg)
+    filter_visualizer_scalars(runner, parse_scalar_keys(args.tb_scalar_keys))
     runner.train()
 
     work_dir = Path(cfg.work_dir)

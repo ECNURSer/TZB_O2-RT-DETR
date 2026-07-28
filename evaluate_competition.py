@@ -51,6 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--imgsz", type=int, default=1280)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--device", default="0", help="Single inference GPU")
+    parser.add_argument("--num-shards", type=int, default=1, help="Number of image shards for parallel cache generation")
+    parser.add_argument("--shard-index", type=int, default=0, help="Current shard index in [0, num_shards)")
     parser.add_argument("--min-conf", type=float, default=0.05)
     parser.add_argument("--nms-iou", type=float, default=0.7, help="Used for TTA fusion; recorded only when TTA is disabled")
     parser.add_argument("--max-det", type=int, default=600)
@@ -134,6 +136,10 @@ def generate_cache(args: argparse.Namespace, image_paths: list[Path], cache_path
         "tta": bool(args.tta),
         "tta_flips": list(args.tta_flips) if args.tta else [],
         "device": str(args.device),
+        "shard": {
+            "index": args.shard_index,
+            "count": args.num_shards,
+        },
         "image_count": len(images),
         "wall_seconds": wall_seconds,
         "inference_image_count": inference_images,
@@ -246,6 +252,12 @@ def main() -> None:
         if args.limit <= 0:
             raise ValueError("--limit must be positive")
         image_paths = image_paths[: args.limit]
+    if args.num_shards <= 0:
+        raise ValueError("--num-shards must be positive")
+    if args.shard_index < 0 or args.shard_index >= args.num_shards:
+        raise ValueError("--shard-index must be in [0, num_shards)")
+    if args.num_shards > 1:
+        image_paths = image_paths[args.shard_index :: args.num_shards]
     if args.reuse_cache:
         payload = json.loads(args.cache.read_text(encoding="utf-8"))
     else:
