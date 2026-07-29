@@ -140,3 +140,4 @@ checkpoints/
 *.engine
 *.safetensors
 events.out.tfevents*
+HANDOFF.md
