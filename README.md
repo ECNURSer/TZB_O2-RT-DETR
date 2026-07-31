@@ -103,9 +103,9 @@ bash run.sh convert \
   --fair-json /data/work1/00_data/TZB/subject1/dataset/train_FAIR1M1.0.json
 ```
 
-## 当前推荐训练：论文 FAIR1M 策略
+## 固定训练策略：论文 FAIR1M 策略
 
-当前主线训练不使用 YOLO 风格增强，不使用早停，按论文 FAIR1M 描述使用 random flip。
+当前主线训练策略已经固化为 `train.py` 默认 `--preset fixed`。以后启动训练不需要再手动补齐一长串超参数；默认就是 `full_fair1m + 80 epoch + imgsz 1024 + random flip only + no AMP + no early stopping`。
 
 启动后四张卡训练：
 
@@ -114,20 +114,11 @@ tmux new-session -d -s o2_full_fair1m_paper_train \
 "cd /home/dihan/TZB-subject1-O2-RT-DETR && \
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && \
 CONDA_ENV=o2-rtdetr-obb bash run.sh train-r50 \
-  --dataset full_fair1m \
   --device 4,5,6,7 \
-  --epochs 80 \
-  --batch 4 \
-  --imgsz 1024 \
-  --workers 8 \
-  --save-period 5 \
-  --val-interval 1 \
-  --lr 0.0001 \
-  --weight-decay 0.0001 \
-  --aug-profile fair1m-paper \
-  --patience 0 \
-  --name o2_rtdetr_r50vd_full_fair1m_paper_e80_b4_4g"
+  --name o2_rtdetr_r50vd_full_fair1m_fixed"
 ```
+
+如果确实要回到 fold0 数据训练，必须显式指定 `--preset paper --fold 0`。如果要做 YOLO 风格增强实验，必须显式指定 `--preset yolo26m-full`。
 
 当前论文策略对应关系：
 
@@ -147,7 +138,10 @@ CONDA_ENV=o2-rtdetr-obb bash run.sh train-r50 \
 | Epochs | `80` | 用户指定；论文表中为 `72` |
 | Batch | `4/卡 × 4卡 = 16` | 用户指定；论文为总 batch `8` |
 | AMP | 关闭 | 当前 KLD/Hungarian 相关计算不启用半精度 |
-| Early stopping | 关闭 | `--patience 0` |
+| Early stopping | 关闭 | fixed preset 固定为 `--patience 0` |
+| Checkpoint | 每 `5` epoch 保存，最多保留 `5` 个 | best checkpoint 仍按 `competition/F1@0.3` 保存 |
+
+注意：`full_fair1m` 曾被发现与本地 test 有同图重复。这个 fixed preset 固化的是模型训练超参数和训练策略，不代表数据划分天然无泄露；正式实验前仍应先做 train/val/test SHA1 去重。
 
 ## TensorBoard
 
@@ -185,10 +179,11 @@ bash run.sh train-r50 ... --tb-scalar-keys all
 
 ## 训练与断点续训
 
-普通 fold0 训练：
+旧 fold0 训练需要显式退出 fixed preset：
 
 ```bash
 bash run.sh train-r50 \
+  --preset paper \
   --fold 0 \
   --device 4,5,6,7 \
   --epochs 80 \
@@ -200,15 +195,7 @@ bash run.sh train-r50 \
 
 ```bash
 bash run.sh train-r50 \
-  --dataset full_fair1m \
   --device 4,5,6,7 \
-  --epochs 80 \
-  --batch 4 \
-  --imgsz 1024 \
-  --lr 0.0001 \
-  --weight-decay 0.0001 \
-  --aug-profile fair1m-paper \
-  --patience 0 \
   --resume runs/<run_name>/epoch_35.pth \
   --name <run_name>
 ```

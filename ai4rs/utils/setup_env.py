@@ -17,6 +17,7 @@ def register_all_modules(init_default_scope: bool = True) -> None:
             Defaults to True.
     """  # noqa
     import ai4rs.datasets  # noqa: F401,F403
+    import ai4rs.engine  # noqa: F401,F403
     import ai4rs.evaluation  # noqa: F401,F403
     import ai4rs.models  # noqa: F401,F403
     import ai4rs.visualization  # noqa: F401,F403

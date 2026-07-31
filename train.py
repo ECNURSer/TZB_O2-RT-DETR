@@ -33,22 +33,35 @@ from project_utils import (
 
 
 DEFAULT_TB_SCALAR_KEYS = (
-    "base_lr",
-    "lr",
-    "loss",
-    "loss_cls",
-    "loss_bbox",
-    "loss_iou",
-    "grad_norm",
-    "memory",
-    "dota/mAP",
-    "dota/AP50",
-    "dota/AP75",
-    "competition/precision",
-    "competition/recall",
-    "competition/F1@0.3",
-    "competition/best_conf@0.3",
+    "train/loss_bbox",
+    "train/loss_cls",
+    "train/loss_iou",
+    "val/loss_bbox",
+    "val/loss_cls",
+    "val/loss_iou",
+    "competition/*",
 )
+
+
+FIXED_TRAINING_PRESET = {
+    "dataset": "full_fair1m",
+    "epochs": 80,
+    "batch": 4,
+    "imgsz": 1024,
+    "workers": 8,
+    "save_period": 5,
+    "max_keep_ckpts": 5,
+    "val_interval": 1,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "warmup_epochs": None,
+    "lrf": 0.005,
+    "cos_lr": False,
+    "amp": False,
+    "aug_profile": "fair1m-paper",
+    "mosaic_epochs": 0,
+    "patience": 0,
+}
 
 
 def allow_full_checkpoint_loading() -> None:
@@ -79,19 +92,28 @@ YOLO26M_FULL_PRESET = {
 }
 
 
+TRAINING_PRESETS = {
+    "fixed": FIXED_TRAINING_PRESET,
+    "yolo26m-full": YOLO26M_FULL_PRESET,
+}
+
+
 def option_passed(*names: str) -> bool:
     return any(argument == name or argument.startswith(f"{name}=") for argument in sys.argv[1:] for name in names)
 
 
 def apply_preset_defaults(args: argparse.Namespace) -> None:
-    if args.preset != "yolo26m-full":
+    preset = TRAINING_PRESETS.get(args.preset)
+    if preset is None:
         return
     option_map = {
+        "dataset": ("--dataset", "--fold"),
         "epochs": ("--epochs",),
         "batch": ("--batch",),
         "imgsz": ("--imgsz",),
         "workers": ("--workers",),
         "save_period": ("--save-period",),
+        "max_keep_ckpts": ("--max-keep-ckpts",),
         "val_interval": ("--val-interval",),
         "lr": ("--lr",),
         "weight_decay": ("--weight-decay",),
@@ -101,10 +123,11 @@ def apply_preset_defaults(args: argparse.Namespace) -> None:
         "amp": ("--amp",),
         "aug_profile": ("--aug-profile",),
         "mosaic_epochs": ("--mosaic-epochs",),
+        "patience": ("--patience",),
     }
     for key, option_names in option_map.items():
-        if not option_passed(*option_names):
-            setattr(args, key, YOLO26M_FULL_PRESET[key])
+        if key in preset and not option_passed(*option_names):
+            setattr(args, key, preset[key])
 
 
 def set_optimizer_schedule(cfg: Config, args: argparse.Namespace) -> None:
@@ -228,14 +251,24 @@ def parse_scalar_keys(value: str) -> tuple[str, ...] | None:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def scalar_key_allowed(key: str, patterns: tuple[str, ...] | None) -> bool:
+    if patterns is None:
+        return True
+    for pattern in patterns:
+        if pattern.endswith("*") and key.startswith(pattern[:-1]):
+            return True
+        if key == pattern:
+            return True
+    return False
+
+
 def filter_visualizer_scalars(runner: Runner, scalar_keys: tuple[str, ...] | None) -> None:
     if scalar_keys is None:
         return
-    allowed = set(scalar_keys)
     add_scalars = runner.visualizer.add_scalars
 
     def add_filtered_scalars(scalars: dict, *args, **kwargs):
-        filtered = {key: value for key, value in scalars.items() if key in allowed}
+        filtered = {key: value for key, value in scalars.items() if scalar_key_allowed(key, scalar_keys)}
         if filtered:
             return add_scalars(filtered, *args, **kwargs)
         return None
@@ -248,7 +281,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", choices=sorted(CONFIGS), default="r50")
     parser.add_argument("--fold", type=int, choices=range(5), default=0)
     parser.add_argument("--dataset", help="named DOTA dataset under data/tzb_dota; overrides --fold, e.g. full_fair1m")
-    parser.add_argument("--preset", choices=("paper", "yolo26m-full"), default="paper")
+    parser.add_argument(
+        "--preset",
+        choices=("fixed", "paper", "yolo26m-full"),
+        default="fixed",
+        help="fixed locks the current full_fair1m paper strategy used by the latest epoch80 run",
+    )
     parser.add_argument("--epochs", type=int, default=72)
     parser.add_argument("--batch", type=int, default=4, help="per-GPU batch size; paper uses 4 on 2 GPUs")
     parser.add_argument("--imgsz", type=int, default=1280)
@@ -258,6 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--aug-profile", choices=("paper", "fair1m-paper", "yolo26m"), default="paper")
     parser.add_argument("--mosaic-epochs", type=int, default=0, help="YOLO-style mosaic epochs before switching it off")
     parser.add_argument("--save-period", type=int, default=1)
+    parser.add_argument("--max-keep-ckpts", type=int, help="maximum checkpoints to keep; fixed preset uses 5")
     parser.add_argument("--val-interval", type=int, default=1)
     parser.add_argument("--max-det", type=int, default=600)
     parser.add_argument("--lr", type=float, help="AdamW base learning rate")
@@ -272,6 +311,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cfg-options", nargs="+", action=DictAction)
     parser.add_argument("--results-csv", type=Path, default=PROJECT_ROOT / "results" / "experiments.csv")
     parser.add_argument("--tb-scalar-keys", default=",".join(DEFAULT_TB_SCALAR_KEYS), help='comma-separated TensorBoard scalar allowlist, or "all"')
+    parser.add_argument("--no-epoch-tb", action="store_true", help="disable epoch-level train/val TensorBoard scalar hook")
+    parser.add_argument("--no-val-loss", action="store_true", help="do not compute validation loss scalars after each train epoch")
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -307,6 +348,8 @@ def main() -> None:
     cfg.train_cfg.max_epochs = args.epochs
     cfg.train_cfg.val_interval = args.val_interval
     cfg.default_hooks.checkpoint.interval = args.save_period
+    if args.max_keep_ckpts is not None:
+        cfg.default_hooks.checkpoint.max_keep_ckpts = args.max_keep_ckpts
     data_label = args.dataset or f"fold{args.fold}"
     run_name = args.name or f"o2_rtdetr_{args.model}vd_{data_label}"
     cfg.work_dir = str(PROJECT_ROOT / "runs" / run_name)
@@ -323,6 +366,8 @@ def main() -> None:
                 patience=args.patience,
             )
         )
+    if not args.no_epoch_tb:
+        cfg.custom_hooks.append(dict(type="ai4rs.EpochTensorboardScalarHook", log_val_loss=not args.no_val_loss))
     if args.resume:
         cfg.resume = True
         if args.resume != "auto":

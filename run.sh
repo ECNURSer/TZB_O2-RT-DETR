@@ -125,9 +125,10 @@ case "$MODE" in
 用法:
   bash run.sh convert --fold 0
   bash run.sh convert --full-fair1m --full-name full_fair1m
+  bash run.sh train-r50 --device 4,5,6,7 --name o2_rtdetr_r50vd_full_fair1m_fixed
+  bash run.sh train-r50 --preset paper --fold 0 --device 0,1 --batch 4 --name o2_rtdetr_r50vd_fold0
+  bash run.sh train-r34 --device 4,5,6,7 --name o2_rtdetr_r34vd_full_fair1m_fixed
   bash run.sh train-r50 --dataset full_fair1m --preset yolo26m-full --device 0,1,2,3,4,5,6,7 --name o2_rtdetr_r50vd_full_fair1m_yoloaug_mosaic40
-  bash run.sh train-r50 --fold 0 --device 0,1 --batch 4 --name o2_rtdetr_r50vd_fold0
-  bash run.sh train-r34 --fold 0 --device 0,1 --batch 4 --name o2_rtdetr_r34vd_fold0
   bash run.sh test --model r50 --dataset full_fair1m --split test --fixed-conf <val_conf> --weights <best.pth> --output results/test_metrics.json --device 0
   bash run.sh competition --model r50 --dataset full_fair1m --split val --weights <best.pth> --cache runs/competition/val_cache.json --output runs/competition/val_metrics.json --device 0
   bash run.sh competition --model r50 --dataset full_fair1m --split test --fixed-conf <val_conf> --weights <best.pth> --cache runs/competition/test_cache.json --output runs/competition/test_metrics.json --device 0

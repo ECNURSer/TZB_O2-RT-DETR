@@ -3,7 +3,7 @@ with read_base():
     from projects.rotated_rtdetr.configs.o2_rtdetr_r34vd_2xb4_72e_dota import *
 
 
-data_root = "data/tzb_dota/fold_0/"
+data_root = "data/tzb_dota/full_fair1m/"
 class_names = (
     "Bus",
     "Cargo-Truck",
@@ -17,17 +17,16 @@ class_names = (
     "other-vehicle",
 )
 metainfo = dict(classes=class_names)
-imgsz = 1280
+imgsz = 1024
 
 model.update(bbox_head=dict(num_classes=10), test_cfg=dict(max_per_img=600))
 
 train_pipeline = [
     dict(type="mmdet.LoadImageFromFile", backend_args=None),
     dict(type="mmdet.LoadAnnotations", with_bbox=True, box_type="qbox"),
-    dict(type="ConvertBoxType", box_type_mapping=dict(gt_bboxes="rbox")),
+    dict(type="ai4rs.ConvertBoxType", box_type_mapping=dict(gt_bboxes="rbox")),
     dict(type="mmdet.Resize", scale=(imgsz, imgsz), keep_ratio=True),
     dict(type="mmdet.RandomFlip", prob=0.75, direction=["horizontal", "vertical", "diagonal"]),
-    dict(type="RandomRotate", prob=0.5, angle_range=180),
     dict(type="mmdet.Pad", size=(imgsz, imgsz), pad_val=dict(img=(114, 114, 114))),
     dict(type="mmdet.PackDetInputs"),
 ]
@@ -35,7 +34,7 @@ val_pipeline = [
     dict(type="mmdet.LoadImageFromFile", backend_args=None),
     dict(type="mmdet.Resize", scale=(imgsz, imgsz), keep_ratio=True),
     dict(type="mmdet.LoadAnnotations", with_bbox=True, box_type="qbox"),
-    dict(type="ConvertBoxType", box_type_mapping=dict(gt_bboxes="rbox")),
+    dict(type="ai4rs.ConvertBoxType", box_type_mapping=dict(gt_bboxes="rbox")),
     dict(type="mmdet.Pad", size=(imgsz, imgsz), pad_val=dict(img=(114, 114, 114))),
     dict(
         type="mmdet.PackDetInputs",
@@ -102,12 +101,12 @@ val_evaluator = [
 ]
 test_evaluator = val_evaluator
 
-train_cfg.update(max_epochs=72, val_interval=1)
+train_cfg.update(max_epochs=80, val_interval=1)
 default_hooks.update(
     logger=dict(interval=50),
-    checkpoint=dict(interval=1, max_keep_ckpts=99999, save_best="competition/F1@0.3", rule="greater"),
+    checkpoint=dict(interval=5, max_keep_ckpts=5, save_best="competition/F1@0.3", rule="greater"),
 )
 vis_backends = [dict(type="LocalVisBackend"), dict(type="TensorboardVisBackend")]
 visualizer = dict(type="RotLocalVisualizer", vis_backends=vis_backends, name="visualizer")
 log_processor = dict(type="LogProcessor", window_size=50, by_epoch=True)
-work_dir = "runs/o2_rtdetr_r34vd_fold0"
+work_dir = "runs/o2_rtdetr_r34vd_full_fair1m"
